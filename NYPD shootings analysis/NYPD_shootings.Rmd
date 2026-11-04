@@ -1,0 +1,153 @@
+---
+title: "NYPD_shootings"
+author: "David Sánchez"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+### NYPD Shooting Incident Data (Historic)
+
+List of every shooting incident that occurred in NYC going back to 2006 through the end of 2024. This data was reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and includes information about the event, the location and time of occurrence. In addition, information related to suspect and victim demographics is also included.
+
+source: <https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic>
+
+```{r import data}
+shootings <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+```
+
+Not sure what columns will not be need yet. There is missing data on location and perpetrator details, we shall treat it as unknown.
+
+```{r view data}
+shootings_tidy <- shootings %>% 
+  rename(key = INCIDENT_KEY, #standarizing names
+         date = OCCUR_DATE,
+         time = OCCUR_TIME,
+         borough = BORO,
+         precinct = PRECINCT,
+         jurisdiction = JURISDICTION_CODE,
+         loc_class = LOC_CLASSFCTN_DESC,
+         loc_desc = LOCATION_DESC,
+         ins_out = LOC_OF_OCCUR_DESC,
+         murder_flag = STATISTICAL_MURDER_FLAG,
+         perp_age = PERP_AGE_GROUP,
+         perp_sex = PERP_SEX,
+         perp_race = PERP_RACE,
+         vic_age = VIC_AGE_GROUP,
+         vic_sex = VIC_SEX,
+         vic_race = VIC_RACE,
+         x_coord = X_COORD_CD,
+         y_coord = Y_COORD_CD,
+         lat = Latitude,
+         long = Longitude,
+         long_lat = Lon_Lat) %>% 
+  mutate(perp_age = na_if(perp_age, "UNKNOWN"), #cleaning missing
+         perp_age = na_if(perp_age, "(null)"),
+         perp_age = na_if(perp_age, "1020"),
+         perp_age = na_if(perp_age, "1028"),
+         perp_age = na_if(perp_age, "2021"),
+         perp_age = na_if(perp_age, "224"),
+         perp_age = na_if(perp_age, "940"),
+         perp_sex = na_if(perp_sex, "(null)"),
+         perp_race = na_if(perp_race, "(null)"),
+         perp_race = na_if(perp_race, "UNKNOWN"),
+         vic_age = na_if(vic_age, "UNKNOWN"),
+         vic_age = na_if(vic_age, "1022"),
+         vic_race = na_if(vic_race, "UNKNOWN"),
+         loc_class = na_if(loc_class, "(null)"),
+         #loc_clas = fct_recode(loc_class, "(Other)" = "OTHER"),
+         date = mdy(date), #classyfing data
+         borough = as.factor(borough),
+         ins_out = as.factor(ins_out),
+         precinct = as.factor(precinct),
+         jurisdiction = as.factor(jurisdiction),
+         loc_class = as.factor(loc_class),
+         perp_sex = as.factor(perp_sex),
+         perp_race = as.factor(perp_race),
+         perp_age = as.factor(perp_age),
+         vic_age = as.factor(vic_age),
+         vic_sex = as.factor(vic_sex),
+         vic_race = as.factor(vic_race)) 
+
+shootings_tidy <- shootings_tidy %>% 
+  mutate(vic_age = factor(vic_age, levels = levels(shootings_tidy$vic_age), ordered = T),
+         perp_age = factor(perp_age, levels = levels(shootings_tidy$perp_age), ordered = T))
+
+summary(shootings_tidy)
+```
+
+```{r time vis}
+shootings_tidy %>% 
+  mutate(hour = hour(shootings_tidy$time)) %>% 
+ggplot(aes(x = hour)) +
+  geom_bar() +
+  labs(title = "Frequency of shootings by Hour", x = "Hour of Day", y = "Count")
+```
+
+**Analysis:**
+
+This graph shows that shootings occur mostly at night. This is probably a mixture of daytime being mostly comprised of regular working hours and perpetrators preferring the stealth provided by the cover of night.
+
+```{r age relation}
+shootings_tidy %>% 
+  filter(!is.na(perp_age)) %>%    # Remove NA perpetrator ages
+  filter(!is.na(vic_age)) %>% 
+  count(perp_age, vic_age) %>% #this is n
+  ggplot(aes(x = perp_age, y = vic_age, fill = n)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = n), color = "white", size = 3.5) +
+  scale_fill_gradient(low = "blue", high = "red") +
+  labs(title = "Perpetrator - Victim age relationship", 
+       x = "Perpetrator's age", 
+       y = "Victim's age",
+       fill = "Number of shootings")
+```
+
+**Analysis:**
+
+This heat map shows that shootings happen mainly between people of the same age. Chances of being involved in one grow with age and then drop dramatically after 44, this probably hints to the drop off actually being earlier so we would be able to extract a more accurate assessment if we got our hands on data with smaller age ranges.
+
+```{r shootings over time}
+shootings_tidy %>% 
+  group_by(date) %>% 
+  summarise(num_shootings = n(), num_deaths = sum(murder_flag)) %>% 
+ggplot() +
+  geom_smooth(aes(x = date, y = num_shootings)) +
+  geom_smooth(aes(x = date, y = num_deaths), color = "red") +
+  labs(title = "Shootings and deaths over time", 
+       x = "Date", 
+       y = "Daily Shootings")
+  labs(title = "Amount of shootings per day", x = "Hour of Day", y = "Count")
+```
+
+**Analysis:**
+
+This visualization choose the general shooting trends throughout the historic data, interestingly violence seems to have spiked during covid, but seems to be normalizing and on a downward trend in general.
+
+```{r location - fatality model}
+shootings_model <- shootings_tidy %>%
+  mutate(fatal = as.numeric(murder_flag == T),
+         loc_class = relevel(loc_class, ref = "STREET")) %>% #making street the reference since its the most common
+  filter(!is.na(fatal))
+
+mod <- glm(fatal ~ loc_class, family = binomial(link = "logit"), data = shootings_model)
+summary(mod)
+```
+
+**Analysis:**
+
+This model compares the lethality of the most commons shooting (those in the street) with other location, we can see the most relevant results in vehicles, were shootings are much more deadly, and no indicates to be safer than the baseline.
+
+### Conclusion
+
+I specifically didn't attempt analysis with the race variables because of knowing that it could be affected by bias, from me as an analyst because I do not live on NY or the US for that matter and I'm not fully aware of all the missing factors that could explain the results in a more complete way, like the demographics of each district. There could also be bias from the data gathering method, in this case the NYPD, since the density of patrols in a certain area would increase the amount of reports filled.
+
+On the age relationship visualization I excluded the NA's result. I can make an educated guess though that these originate mostly from perpetrators that weren't caught, and extrapolating they are statisticaly in a similar age range as the victim based on the result, but without further information that could be a biased conclusion.
+
+```{r session info}
+sessionInfo()
+```
