@@ -1,0 +1,301 @@
+---
+title: "Weight loss analysis"
+format: html
+embed-resources: true
+editor: visual
+---
+
+```{r setup}
+#| echo: false
+#| output: false
+library("tidyverse")
+library("plotly")
+```
+
+## Data
+
+I located a dataset comprised of information from 100 participants, focusing on demographics, dietary habits, physical activity levels, and lifestyle factors to predict weight change over time. It was sourced from Kaggle and it’s of an appropriate size. I would like to analyze the most and least accurate predictor for weight, and try to get insight into the more effective ways to lose weight.
+
+```{r import}
+#| echo: false
+raw_data <- read.csv("data/weight_change_dataset.csv")
+```
+
+```{r cleaning}
+#| echo: false
+data <- raw_data %>% rename("BMR.Calories" = BMR..Calories., 
+                "Current.Weight.lbs" = Current.Weight..lbs., 
+                "Total.Weight.Change.lbs" = Weight.Change..lbs.,
+                "Duration.weeks" = Duration..weeks.,
+                "Final.Weight.lbs" = Final.Weight..lbs.
+                ) %>%
+  mutate(Gender = as_factor(Gender),
+         Participant.ID = as_factor(Participant.ID),
+         Physical.Activity.Level = factor(Physical.Activity.Level, levels = c("Sedentary", "Lightly Active", "Moderately Active", "Very Active")),
+         Sleep.Quality = as_factor(Sleep.Quality),
+         Average.Weekly.Weight.Change.lbs = Total.Weight.Change.lbs/Duration.weeks)
+
+data <- data[order(data$Average.Weekly.Weight.Change.lbs), ]
+tibble(data)
+```
+
+## Visualization
+
+### Fig 0
+
+```{r demo}
+#| echo: false
+fig0 <- count(data, Gender) %>%  plot_ly(labels = ~Gender, 
+                                         values = ~n, 
+                                         type = 'pie')
+
+fig0
+
+
+
+```
+
+### Fig 1
+
+```{r}
+#| echo: false
+fig1 <- data %>%  plot_ly(x = ~Age, 
+                          type = 'histogram',
+                          histnorm = "probability",
+                          alpha = .6)
+
+fig1
+```
+
+### Fig 2
+
+```{r weight change}
+#| echo: false
+# More robust approach with proper grouping
+fig2_plotly <- plot_ly()
+
+# Get unique participants in the correct order
+participants_ordered <- data[order(data$Average.Weekly.Weight.Change.lbs), ]$Participant.ID
+
+# Add Gender traces
+gender_levels <- unique(data$Gender)
+for(level in gender_levels) {
+  subset_data <- data[data$Gender == level, ]
+  fig2_plotly <- fig2_plotly %>%
+    add_trace(
+      data = subset_data,
+      type = 'bar',
+      x = ~factor(Participant.ID, levels = participants_ordered),
+      y = ~Average.Weekly.Weight.Change.lbs,
+      name = level,
+      legendgroup = "gender",
+      showlegend = TRUE,
+      visible = TRUE,
+      text = ~paste("Participant:", Participant.ID,
+                    "<br>Weight Change:", Average.Weekly.Weight.Change.lbs, "lbs",
+                    "<br>Gender:", Gender),
+      hoverinfo = 'text'
+    )
+}
+
+# Add Sleep Quality traces
+sleep_levels <- unique(data$Sleep.Quality)
+for(level in sleep_levels) {
+  subset_data <- data[data$Sleep.Quality == level, ]
+  fig2_plotly <- fig2_plotly %>%
+    add_trace(
+      data = subset_data,
+      type = 'bar',
+      x = ~factor(Participant.ID, levels = participants_ordered),
+      y = ~Average.Weekly.Weight.Change.lbs,
+      name = level,
+      legendgroup = "sleep",
+      showlegend = TRUE,
+      visible = FALSE,
+      text = ~paste("Participant:", Participant.ID,
+                    "<br>Weight Change:", Average.Weekly.Weight.Change.lbs, "lbs",
+                    "<br>Sleep Quality:", Sleep.Quality),
+      hoverinfo = 'text'
+    )
+}
+
+# Add Physical Activity Level traces
+activity_levels <- unique(data$Physical.Activity.Level)
+for(level in activity_levels) {
+  subset_data <- data[data$Physical.Activity.Level == level, ]
+  fig2_plotly <- fig2_plotly %>%
+    add_trace(
+      data = subset_data,
+      type = 'bar',
+      x = ~factor(Participant.ID, levels = participants_ordered),
+      y = ~Average.Weekly.Weight.Change.lbs,
+      name = level,
+      legendgroup = "activity",
+      showlegend = TRUE,
+      visible = FALSE,
+      text = ~paste("Participant:", Participant.ID,
+                    "<br>Weight Change:", Average.Weekly.Weight.Change.lbs, "lbs",
+                    "<br>Physical Activity:", Physical.Activity.Level),
+      hoverinfo = 'text'
+    )
+}
+
+# Calculate number of traces for each category
+n_gender <- length(gender_levels)
+n_sleep <- length(sleep_levels)
+n_activity <- length(activity_levels)
+
+fig2_plotly <- fig2_plotly %>%
+  layout(
+    title = "Weight Change by Participant",
+    xaxis = list(
+      title = "Participant ID",
+      tickangle = -45,
+      categoryorder = "array",
+      categoryarray = participants_ordered
+    ),
+    yaxis = list(title = "Weight Change (lbs)"),
+    barmode = 'group',
+    updatemenus = list(
+      list(
+        type = "dropdown",
+        direction = "down",
+        x = 1, xanchor = "right",
+        y = 1, yanchor = "top",
+        buttons = list(
+          list(
+            method = "update",
+            args = list(list(visible = c(rep(TRUE, n_gender), rep(FALSE, n_sleep), rep(FALSE, n_activity)))),
+            label = "Gender"
+          ),
+          list(
+            method = "update",
+            args = list(list(visible = c(rep(FALSE, n_gender), rep(TRUE, n_sleep), rep(FALSE, n_activity)))),
+            label = "Sleep Quality"
+          ),
+          list(
+            method = "update",
+            args = list(list(visible = c(rep(FALSE, n_gender), rep(FALSE, n_sleep), rep(TRUE, n_activity)))),
+            label = "Physical Activity Level"
+          )
+        )
+      )
+    )
+  )
+
+fig2_plotly
+```
+
+### Fig 3
+
+```{r calories}
+#| echo: false
+fig3 <- data %>% ggplot(aes(x = Daily.Calories.Consumed,
+                            y = Average.Weekly.Weight.Change.lbs,
+                            color = Gender)) +
+  geom_smooth() +
+  geom_point()
+
+fig3 <- ggplotly(fig3)  
+
+fig3
+```
+
+### Fig 4
+
+```{r stress}
+#| echo: false
+
+fig4 <- data %>% ggplot(aes(x = Stress.Level,
+                            y = Average.Weekly.Weight.Change.lbs,
+                            color = Gender)) +
+  geom_smooth(aes(x = Stress.Level))
+
+fig4 <- ggplotly(fig4)  
+
+fig4
+```
+
+## Breakdown
+
+For the **Aesthetics** I choose an assortment of variables that could be relevant to answer the question of which parameters are the most correlated with weight loss. The only not shown in any visualization were those that could be inferred using a neighboring variable, like Final Weight being better explained by Weight Change.
+
+The **Marks** used were pies, bars, lines and points, these are common and seemed appropriate for the data used. Specifically in the Daily calories/Weight change comparison I elected to use both line and dots so that both the overall trend and individual cases could be compared at the same time.
+
+**Statistics** wise most data was computed as its raw value. Exceptions are where the average weekly weight change, which was calculated to normalize it over the variance in duration for participants. The smoothing was placed to show the overall trend in the calorie's plot.
+
+The Weight Change by participant breakdown figure was **faceted** through the use of buttons, to show different coloring depending on factorial variable, with the hope of allowing the user to quickly compare and arrive to interconnected insights on the distribution.
+
+**Goals sketching:**
+
+Purpose - Why?
+
+Explore and confirm what I think about the most efficient way to diet.
+
+Means – How?
+
+Relation of possible actions and weight loss (most/least efficient).
+
+Data Characteristics – What?
+
+Compare, see patterns, see the speed of weight loss, maybe some methods help you quickly but then peter out.
+
+Target Data – Where?
+
+Relative reference frame (data compared against other data, not a known standard).
+
+Workflow – When?
+
+I’m coming from a place where I think calorie deficiency is the most important thing to lose weight.
+
+Roles – Who?
+
+Audience, colleagues, to show proficiency and inspire curiosity.
+
+## Evaluation
+
+**The target question you want to answer**
+
+Is it easy to see correlation between collected factors and weight loss? And draw insights into effective and non-effective methods to lose weight?
+
+**The people you would recruit to answer that question**
+
+Dietitians and people that are trying to lose weight, general public. Because of the scope of this project, family members and friends were used for this evaluation.
+
+**The kinds of measures you would use to answer your data (e.g., insight depth, use cases, accuracy) and what these measures would tell you about the core question**
+
+See if dietitians think it matches their knowledge, see if if matches common sense for the general public and if any new insights are reached.
+
+**The approach you will use to answer that question (e.g., a journaling study, a formal experiment, etc.)**
+
+I believe a journaling study would be the most useful so that the users can write down their experience with the visualization, how they interacted with it and any insight that they were able to glimpse or frustrations they encountered.
+
+**What criteria would you use to indicate that your visualization was successful**
+
+Concurrence of insights and clarity on intractability functions.
+
+**Evaluation results:**
+
+I will attach the respective journals in this section. they are in Spanish since I am based in Mexico. The summary of the results shall be analyzed in the conclusion.
+
+[Journals](https://drive.google.com/drive/folders/1KcOsvE2dXD2qNmeY1-CdWTIuC1PawIb2?usp=sharing)
+
+## Conclusion
+
+*A synthesis of your findings, including what elements of your approach worked well and what elements you would refine in future iterations.*
+
+For Fig 0, there were no comment in any journals. This is expected as it is a very basic plot with some demo information. The intention was for it to introduce the sample size and composition to the viewer along fig 1, to give a sense of scale for future insights. Journal 1 mentions that the option to save any plot as a png seems very useful in general.
+
+In Fig 1, Journal 1 and 3 commented that a label for the y axis was needed in order to understand what the visualization was conveying (for reference it was proportion of the sample). This is a valid critique that would be easily fixed in an updated prototype. This is also the Figure where most people started experimenting with the interactive functions. I used the plotly library to easily make the plots interactive, so it had the default features. Journal 1 commented on many of the features not being relevant to the visualization, instinctual nor ordered correctly (they would like the reset button to be at the beginning). Journal 3 also seemed to struggle to learn what each option did. One of my main conclusions of this evaluation is that a tutorial of the main functions in definitely needed, which I do not think would take long or be overly complex. I would need to further review whether it is possible and how to disable some of the plotly defaults.
+
+Fig 2 seems to be the one where most participants got their main insights from (data wise). A collapsible list that changed the color variable was included here to easily switch between information and allow for a flow of thoughts and comparison. The journals agree that it was very effective, the main reason no such list shows up again on the next plots is to compare approaches in order to find the most insightful. Journal 1 communicated that they would have liked for age to be an option here and feel their analysis couldn't be complete without it. I'm inclined to agree and would like to add it to the next version. Journal 2 and 4 seemed to concur that activity level had a small but existent impact on weight loss. Journal 3 disagreed and came to the conclusion that it was the most important factor and Journal 1 reported it didn't matter at all. The range of responses make me realize that the information was not presented in a way that could be easily interpreted or at least not accurately by all. I would try with a different method such as a smooth line plot for that variable and make a follow up evaluation. Journal 2 noted that the list menu overlapped some of the graphic and this should also be changed. Journal 4 suggested to make the color scale for the sleep quality legend different, since the color green alinged with the "poor" quality which does not follow common sense. Lastly for this figure Journal 3 asked for the legend showing the weight loss was rounded up to less decimals to make it clearer and also found out that the function to filter using the legend was broken in this visualization. I had only tested it on the other figures and made the mistake of assuming it was working in all.
+
+On the next plot (Fig 3), I chose dial back the complexity and just divide the colors between gender. All journals seemed to conclude that the difference was small on the actual weight effect although it could be easily seen that males eat more calories in general. Journal 1 used this visualization to conclude that daily consumption of calories was the most important value to determine weight loss, journal 2 concurs while journal 4 is in disagreement, so this is another area of opportunity for improvement.
+
+Finally, Fig 4 had little comments, but I think that it was the easiest to analyze. It had no comments requesting clarity but instead allowed Journal 2 and 4 to easily conclude that Stress has a very strong impact in weight development, with no dissenting voices.
+
+In conclusion I believe that the visualizations were serviceable and led to insights but there is a lot of room for postivie change. Insights didn't always concur and further questions or a thinkalouds would be useful in narrowing out why. The collapse menu feature was a success and should be implemented in most figures and age is an important variable that should be added to the exploration.
+
+## Source
+
+<https://www.kaggle.com/datasets/abdullah0a/comprehensive-weight-change-prediction/data>
