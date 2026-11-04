@@ -1,0 +1,620 @@
+---
+title: "Mining Psychological Diagnoses to Identify Vulnerable Populations in Chihuahua, Mexico "
+format: html
+---
+
+```{r setup}
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(plotly)
+library(clustMixType)
+library(vcd)
+library(uwot)
+library(cluster)
+set.seed(42)
+data <- read_csv("psicologica.csv")
+```
+
+```{r clean up}
+df <- data |> 
+    mutate(education = case_when(
+        education == "ninguno" ~ "none",
+        education == "preescolar" ~ "none", #small, merging
+        education == "primaria" ~ "primary",
+        education == "secundaria" ~ "secondary",
+        education == "media_superior" ~ "high_school",
+        education == "superior" ~ "bachelor",          
+        education == "posgrado" ~ "bachelor", #small, merging
+        TRUE ~ education
+    )) |>
+    mutate(education = factor(
+        education, 
+        levels = c("none", "primary", "secondary", "high_school", "bachelor"), 
+        ordered = TRUE
+    )) |> 
+    mutate(marital_status = case_when(
+        marital_status == "soltero_a"    ~ "single",
+        marital_status == "casado_a"     ~ "married",
+        marital_status == "divorciado_a" ~ "divorced",
+        marital_status == "viudo_a"      ~ "widowed",
+        marital_status == "separado_a"   ~ "separated",
+        TRUE ~ as.character(marital_status)
+    )) |> 
+    mutate(marital_status = factor(
+        marital_status,
+        levels = c("single", "married", "divorced", "separated", "widowed")
+    )) |> 
+    mutate(diagnosis = factor(diagnosis
+    )) |> 
+    mutate(gender = factor(gender
+    )) |> 
+    mutate(month = factor(
+        month,
+        levels = c("january", "february", "march", "april", "may", "june",
+                   "july", "august", "september", "october", "november", "december"),
+        ordered = TRUE
+    )) |> 
+    mutate(occupation = iconv(occupation, from = "latin1", to = "UTF-8"
+    ))|> 
+    mutate(occupation = str_trim(tolower(occupation))) |>   # clean whitespace + case
+    mutate(occupation = case_when(
+        occupation == "estudiante"                    ~ "student",
+        occupation == "empleado_a"                    ~ "employed",
+        
+        occupation %in% c("comerciante", "independiente",
+                          "negocio propio", "comercio",
+                          "trabaja en casa")          ~ "self_employed",
+        
+        occupation %in% c("ingeniero", "maestro_a", "abogada",
+                          "consultora", "auxiliar contable",
+                          "contador", "profesor")     ~ "professional",
+        
+        occupation %in% c("enfermero_a", "interprete medico",
+                          "paramedico", "nutriologo_a",
+                          "médico")                   ~ "healthcare",
+        
+        occupation %in% c("conductora de aplicacion", "cocinero",
+                          "estilista", "policia",
+                          "recepcionista cerrajería", "ventas") ~ "service",
+        
+        occupation %in% c("pensionado_a", "jubilado_a") ~ "retired",
+        occupation %in% c("sin_ocupacion", "incapacitada") ~ "unemployed",
+        occupation == "hogar"                         ~ "homemaker",
+        
+        TRUE ~ occupation   # keep NA and anything unmatched
+    )) |> 
+    mutate(occupation = factor(occupation
+    )) |> 
+    mutate(diagnosis = iconv(diagnosis, from = "latin1", to = "UTF-8")) |> 
+    mutate(diagnosis = str_trim(tolower(diagnosis))) |> 
+    mutate(diagnosis = case_when(
+        diagnosis == "problema_de_lenguaje"     ~ "language_problem",
+        diagnosis == "violencia_de_genero"    ~ "gender_violence",  
+        diagnosis == "ansiedad_generalizada"                                   ~ "generalized_anxiety",
+        diagnosis == "depresion"                                               ~ "depression",
+        diagnosis == "violencia_familiar"                                      ~ "family_violence",
+        diagnosis == "disfuncion_familiar"                                     ~ "family_dysfunction",
+        diagnosis == "problema_de_relacion_entre_padres_e_hijos"               ~ "parent_child_relationship_problem",
+        diagnosis == "maltrato_fisico_y_o_psicologico_infantil"                ~ "child_physical_or_psychological_abuse",
+        diagnosis == "relacion_conflictiva_con_el_conyuge_o_la_pareja"         ~ "conflictual_relationship_with_spouse_or_partner",
+        diagnosis == "tdah"                                                    ~ "adhd",
+        diagnosis == "maltrato_psicologico_y_o_fisico_por_parte_del_conyuge_o_la_pareja" ~ "spousal_psychological_or_physical_abuse",
+        diagnosis == "problema_academico_educativo"                            ~ "academic_educational_problem",
+        diagnosis == "duelo"                                                   ~ "grief",
+        diagnosis == "problemas_sexuales_y_de_identidad"                       ~ "sexual_and_identity_problems",
+        diagnosis == "estres_indicadores"                                      ~ "stress_indicators",
+        diagnosis == "condicion_psiquiatrica_indicadores"                      ~ "psychiatric_condition_indicators",
+        diagnosis == "abuso_sexual_y_o_violacion_sexual"                       ~ "sexual_abuse_or_rape",
+        diagnosis == "explosivo_intermitente_indicadores"                      ~ "intermittent_explosive_indicators",
+        diagnosis == "prevencion_de_adiccion"                                  ~ "addiction_prevention",
+        diagnosis == "bipolar"                                                 ~ "bipolar",
+        diagnosis == "niño_afectado_por_relacion_parental_conflictiva"         ~ "child_affected_by_conflictual_parental_relationship",
+        diagnosis == "ruptura_familiar_por_separacion_o_divorcio"              ~ "family_breakup_due_to_separation_or_divorce",
+        diagnosis == "trastorno_de_la_personalidad"                            ~ "personality_disorder",
+        diagnosis == "problema_de_aprendizaje"                                 ~ "learning_problem",
+        diagnosis == "problemas_de_omision_y_o_negligencia_infantil"           ~ "child_neglect_or_omission",
+        diagnosis == "trastorno_alimenticio"                                   ~ "eating_disorder",
+        diagnosis == "obsesivo_compulsivo"                                     ~ "obsessive_compulsive",
+        diagnosis == "violencia_sexual_por_parte_del_conyuge_o_la_pareja"      ~ "spousal_sexual_violence",
+        
+        TRUE ~ diagnosis
+    )) |> 
+    mutate(diagnosis = factor(diagnosis))
+
+```
+
+```{r correlations}
+cat_vars <- df %>% select(gender, education, occupation, marital_status, diagnosis)
+
+cramers_v_matrix <- function(data) {
+  vars <- names(data)
+  n <- length(vars)
+  m <- matrix(NA, n, n, dimnames = list(vars, vars))
+  for (i in 1:n) for (j in 1:n) {
+    if (i == j) { m[i,j] <- 1; next }
+    tab <- table(data[[i]], data[[j]])
+    chi <- suppressWarnings(chisq.test(tab)$statistic)
+    m[i,j] <- sqrt(as.numeric(chi) / (sum(tab) * (min(dim(tab)) - 1)))
+  }
+  m
+}
+
+cramers_v_matrix(cat_vars)
+
+cv <- cramers_v_matrix(cat_vars)
+plot_ly(x = colnames(cv), y = rownames(cv), z = cv,
+        type = 'heatmap', colorscale = 'Blues',
+        text = ~round(cv, 2), texttemplate = "%{text}") %>%
+  layout(title = "Cramér's V — Association between Categorical Variables")
+```
+
+```{r gender plot}
+summary(df)
+
+gender_counts <- df %>%
+  count(gender = ifelse(is.na(gender), "not specified", as.character(gender)))
+
+# Pie chart
+plot_ly(
+  gender_counts,
+  labels = ~gender,
+  values = ~n,
+  type = 'pie',
+  textinfo = 'label+percent+value',
+  textposition = 'inside',
+  marker = list(
+    colors = c('#EF553B', '#636EFA', '#CCCCCC'),
+    line = list(color = 'white', width = 2)
+  )
+) %>%
+  layout(title = 'Gender Distribution')
+```
+
+```{r age plot}
+plot_ly(
+  df,
+  y = ~age,
+  type = 'violin',
+  meanline = list(visible = TRUE),  # mean line
+  points = FALSE,                   # hide points (18k is too many)
+  marker = list(color = '#636EFA'),
+  line = list(color = '#636EFA'),
+  fillcolor = 'rgba(99,110,250,0.3)'
+) %>%
+  layout(
+    title = 'Age Distribution',
+    yaxis = list(title = 'Age'),
+    xaxis = list(showticklabels = FALSE),
+    showlegend = FALSE
+  )
+```
+
+```{r population comparison}
+#bin sample
+# English labels, in chronological order
+age_levels <- c("0–4", "5–9", "10–14", "15–19", "20–24",
+                "25–29", "30–34", "35–39", "40–44", "45–49",
+                "50–54", "55–59", "60–64", "65–69", "70–74",
+                "75–79", "80–84", "85+")
+
+# Breaks to match those bins
+age_breaks <- c(0, 5, 10, 15, 20, 25, 30, 35, 40, 45,
+                50, 55, 60, 65, 70, 75, 80, 85, Inf)
+
+# Spanish → English mapping
+spanish_to_english <- c(
+  "0 a 4 años"     = "0–4",
+  "5 a 9 años"     = "5–9",
+  "10 a 14 años"   = "10–14",
+  "15 a 19 años"   = "15–19",
+  "20 a 24 años"   = "20–24",
+  "25 a 29 años"   = "25–29",
+  "30 a 34 años"   = "30–34",
+  "35 a 39 años"   = "35–39",
+  "40 a 44 años"   = "40–44",
+  "45 a 49 años"   = "45–49",
+  "50 a 54 años"   = "50–54",
+  "55 a 59 años"   = "55–59",
+  "60 a 64 años"   = "60–64",
+  "65 a 69 años"   = "65–69",
+  "70 a 74 años"   = "70–74",
+  "75 a 79 años"   = "75–79",
+  "80 a 84 años"   = "80–84",
+  "85 años o más"  = "85+"
+)
+
+#read and clean
+pop_raw <- read.csv("population.csv", fileEncoding = "UTF-8")
+
+pop <- pop_raw %>%
+  select(sex = Sex,
+         age_range = `Age.Range`,
+         pop_n = Population,
+         pop_pct = Percentage) %>%
+  mutate(
+    sex       = recode(sex, "Hombre" = "male", "Mujer" = "female"),
+    age_range = spanish_to_english[age_range],
+    age_range = factor(age_range, levels = age_levels)   # <-- ensures order
+  ) %>%
+  arrange(sex, age_range)
+
+sample <- df %>%
+  filter(!is.na(age), !is.na(gender)) %>%
+  mutate(
+    age_range = cut(age, breaks = age_breaks, labels = age_levels,
+                    right = FALSE, include.lowest = TRUE),
+    sex       = as.character(gender)
+  ) %>%
+  count(sex, age_range, name = "sample_n") %>%
+  group_by(sex, age_range, .drop = FALSE) %>%
+  summarise(sample_n = sum(sample_n), .groups = "drop") %>%
+  mutate(sample_pct = 100 * sample_n / sum(sample_n))
+
+compare <- pop %>%
+  full_join(sample, by = c("sex", "age_range")) %>%
+  mutate(
+    sample_n   = replace_na(sample_n, 0),
+    sample_pct = replace_na(sample_pct, 0),
+    diff       = sample_pct - pop_pct
+  ) %>%
+  arrange(sex, age_range) %>%
+  mutate(age_range = factor(age_range, levels = age_levels))
+
+pyramid <- compare %>%
+  mutate(
+    sample_signed = ifelse(sex == "male", -sample_pct, sample_pct),
+    pop_signed    = ifelse(sex == "male", -pop_pct,    pop_pct)
+  )
+
+# plot
+plot_ly() %>%
+  add_bars(
+    data = pyramid, y = ~age_range, x = ~pop_signed,
+    orientation = 'h', name = 'Population',
+    marker = list(color = 'rgba(150,150,150,0.5)'),
+    customdata = ~pop_pct,
+    hovertemplate = 'Population: %{customdata:.2f}%<extra></extra>'
+  ) %>%
+  add_bars(
+    data = pyramid, y = ~age_range, x = ~sample_signed,
+    orientation = 'h', name = 'Sample',
+    marker = list(color = ifelse(pyramid$sex == "male", '#636EFA', '#EF553B')),
+    customdata = ~sample_pct,
+    hovertemplate = 'Sample: %{customdata:.2f}%<extra></extra>'
+  ) %>%
+  layout(
+    title = 'Population Pyramid — Sample vs. Reference Population',
+    barmode = 'overlay',
+
+    xaxis = list(
+      title = 'Percentage (%)',
+      tickvals = seq(-10, 10, 2),
+      ticktext = abs(seq(-10, 10, 2)),
+      zeroline = TRUE, zerolinecolor = 'black', zerolinewidth = 1
+    ),
+
+    yaxis = list(
+      title = 'Age',
+      categoryorder = 'array',
+      categoryarray = age_levels
+    ),
+
+    margin = list(t = 90, b = 60, l = 60, r = 140),   # room for right legend
+
+    annotations = list(
+      list(x = 0.20, y = 1.10, xref = 'paper', yref = 'paper',
+           text = '<b>Male</b>', showarrow = FALSE,
+           font = list(size = 14, color = '#636EFA'), xanchor = 'center'),
+      list(x = 0.70, y = 1.10, xref = 'paper', yref = 'paper',
+           text = '<b>Female</b>', showarrow = FALSE,
+           font = list(size = 14, color = '#EF553B'), xanchor = 'center')
+    ),
+
+    legend = list(
+      orientation = 'v',
+      x = 1.02, xanchor = 'left',
+      y = 1
+    ),
+
+    bargap = 0.05
+  )
+
+  
+```
+
+```{r temperature model}
+temps <- c(13.15, 22.05, 23.4, 26.4, 28.4, 30.85, 28.55, 29.8, 27.15,
+           25.25, 20.65, 18.75,   # 2025: Jan–Dec
+           14.25, 19.55, 22.8, 23.55, 27.4, 31)  # 2026: Jan–Jun
+
+month_levels <- c("january","february","march","april","may","june",
+                  "july","august","september","october","november","december")
+
+counts_by_month_year <- df %>%
+  count(year, month) %>%
+  mutate(month = factor(month, levels = month_levels))
+
+temp_lookup <- tibble(
+  year  = c(rep(2025, 12), rep(2026, 6)),
+  month = factor(c(month_levels, month_levels[1:6]), levels = month_levels),
+  avg_temp = temps
+)
+
+temp_lookup <- temp_lookup %>%
+  mutate(month = factor(month, levels = levels(counts_by_month_year$month),
+                        ordered = TRUE))
+
+result <- counts_by_month_year %>%
+  left_join(temp_lookup, by = c("year", "month"))
+
+print(result)
+
+model <- lm(n ~ avg_temp, data = result)
+
+summary(model) #not significant
+```
+
+```{r diagnosis plot}
+diag_counts <- df %>%
+  count(diagnosis) %>%
+  mutate(diagnosis = ifelse(is.na(diagnosis), "not specified", as.character(diagnosis)))
+
+plot_ly(
+  diag_counts,
+  y = ~reorder(diagnosis, n),   # sort by count
+  x = ~n,
+  type = 'bar',
+  orientation = 'h',
+  text = ~n,
+  textposition = 'outside',
+  marker = list(color = '#636EFA')
+) %>%
+  layout(
+    title = 'Diagnosis Counts',
+    xaxis = list(title = 'Number of Cases'),
+    yaxis = list(title = ''),
+    showlegend = FALSE
+  )
+```
+
+```{r education}
+#all
+edu_counts <- df %>%
+  count(education) %>%
+  mutate(education = ifelse(is.na(education), "not specified", as.character(education)))
+
+plot_ly(
+  edu_counts,
+  x = ~factor(education, levels = education),  
+  y = ~n,
+  type = 'bar',
+  text = ~n,
+  textposition = 'outside',
+  marker = list(
+    color = c('#00CC96', '#636EFA', '#EF553B', '#AB63FA',
+              '#FFA15A', '#19D3F3', '#FF6692'),
+    line = list(color = 'white', width = 1)
+  )
+) %>%
+  layout(
+    title = 'Education Levels',
+    xaxis = list(title = 'Education', tickangle = -30),
+    yaxis = list(title = 'Number of Cases'),
+    showlegend = FALSE
+  )
+
+#yo diria no usar nada de esto:
+#15 and older for a comparison with demographic data in an adult population
+
+edu_order <- c("none", "primary", "secondary", "high_school",
+               "bachelor", "not specified")
+
+edu_counts_15 <- df %>%
+  filter(age >= 15) %>%
+  count(education) %>%
+  mutate(education = ifelse(is.na(education), "not specified", as.character(education))) %>%
+  mutate(education = factor(education, levels = edu_order))
+
+plot_ly(
+  edu_counts_15,
+  x = ~education,
+  y = ~n,
+  type = 'bar',
+  text = ~n,
+  textposition = 'outside',
+  marker = list(
+    color = c('#EF553B',   # none
+              '#FFA15A',   # primary
+              '#FFD166',   # secondary
+              '#00CC96',   # high_school
+              '#636EFA',   # bachelor
+              '#CCCCCC'),  # not specified
+    line = list(color = 'white', width = 1)
+  )
+) %>%
+  layout(
+    title = 'Education Levels (Age ≥ 15)',
+    xaxis = list(
+      title = 'Education',
+      tickangle = -30,
+      categoryorder = 'array',
+      categoryarray = edu_order
+    ),
+    yaxis = list(title = 'Number of Cases'),
+    showlegend = FALSE
+  )
+
+#comparison with population
+pop <- tibble(
+  education = c("none", "primary", "secondary", "high_school", "bachelor"),
+  pop_pct   = c(0.15, 12.97, 26.46, 26.00, 34.42)
+)
+
+sample_edu <- df %>%
+  filter(age >= 15, !is.na(education)) %>%
+  count(education) %>%
+  mutate(sample_pct = 100 * n / sum(n)) %>%
+  select(education, n, sample_pct)
+
+# Join + compute difference, keep order
+compare <- sample_edu %>%
+  left_join(pop, by = "education") %>%
+  mutate(
+    education = factor(education, levels = edu_order),
+    diff      = sample_pct - pop_pct,
+    direction = ifelse(diff > 0, "Over-represented", "Under-represented"),
+    label     = paste0(ifelse(diff > 0, "+", ""), round(diff, 1), " pp")
+  ) %>%
+  arrange(education)
+
+# Difference bar chart
+plot_ly(
+  compare,
+  x = ~education,
+  y = ~diff,
+  type = 'bar',
+  color = ~direction,
+  colors = c("Over-represented"  = "#00CC96",
+             "Under-represented" = "#EF553B"),
+  text = ~label,
+  textposition = 'outside'
+) %>%
+  layout(
+    title = 'Difference in Education Distribution (Sample − Population)',
+    xaxis = list(
+      title = 'Education',
+      tickangle = -30,
+      categoryorder = 'array',
+      categoryarray = edu_order
+    ),
+    yaxis = list(title = 'Difference (percentage points)'),
+    shapes = list(
+      list(type = "line", x0 = -0.5, x1 = 4.5, y0 = 0, y1 = 0,
+           line = list(color = "black", width = 1, dash = "dot"))
+    ),
+    legend = list(title = list(text = ''))
+  )
+
+#test for statistically significance
+observed <- compare$n
+expected <- sum(observed) * compare$pop_pct / 100
+
+chisq.test(x = observed, p = compare$pop_pct / 100) #very significant pero que 
+```
+
+```{r find best k}
+#k_range <- 3:10
+
+# Run validation (using default silhouette index)
+#validation_result <- validation_kproto(
+#  data = df_mixed, 
+#  k = k_range, 
+#  method = "silhouette",
+#  verbose = TRUE
+#)
+
+# View the optimal k and the index values
+#print(validation_result)
+
+#head(df)
+
+#$indices
+#        3         4         5         6         7         8         9         7 
+# 0.2742211 0.3084883 0.2216682 0.3711342 0.3271025 0.3006865 0.3753429 0.3250878 
+```
+
+```{r clusters}
+#kmeans because n>10000
+#k-prototypes is k-means for categorical and mixed data
+df_clean <- df %>%
+  select(id, age, gender, education, occupation, marital_status) %>%
+  na.omit()
+
+#Cluster 
+X <- df_clean %>% select(-id)
+set.seed(42)
+kp <- kproto(X, k = 6, nstart = 5)
+
+#Attach cluster labels 
+df_clean <- df_clean %>% mutate(cluster = factor(kp$cluster))
+
+#Join 
+df_clustered <- df %>%
+  left_join(df_clean %>% select(id, cluster), by = "id")
+```
+
+```{r cluster analysis}
+#this is to see the diff from the overall data
+profile_clusters <- function(data, var) {
+  overall <- data %>%
+    count({{ var }}) %>%
+    mutate(overall_pct = 100 * n / sum(n)) %>%
+    select({{ var }}, overall_pct)
+
+  data %>%
+    count(cluster, {{ var }}) %>%
+    group_by(cluster) %>%
+    mutate(cluster_pct = 100 * n / sum(n)) %>%
+    ungroup() %>%
+    left_join(overall, by = rlang::as_name(rlang::ensym(var))) %>%
+    mutate(diff = round(cluster_pct - overall_pct, 1))
+}
+
+clug_gender <- profile_clusters(df_clustered, gender)
+clu_edu <- profile_clusters(df_clustered, education)
+clu_dig <- profile_clusters(df_clustered, diagnosis)
+clu_occ <- profile_clusters(df_clustered, occupation)
+clu_ms <- profile_clusters(df_clustered, marital_status)
+
+df_clustered %>%
+  group_by(cluster) %>%
+  summarise(
+    n          = n(),
+    age_mean   = round(mean(age, na.rm = TRUE), 1),
+    age_median = median(age, na.rm = TRUE),
+    age_sd     = round(sd(age, na.rm = TRUE), 1),
+    .groups    = "drop"
+  )
+```
+
+```{r cluster labels}
+cluster_labels <- c(
+  "1" = "Middle-aged people struggling with Grief",
+  "2" = "Kids struggling with ADHD",
+  "3" = "Male highschoolers struggling with Anxiety",
+  "4" = "Secondary students struggling with Depression",
+  "5" = "Female highschoolers struggling with Depression",
+  "6" = "Adults struggling with Partner Conflict")
+
+features <- df_clustered %>% select(age, gender, education, occupation, marital_status)
+
+# Gower distance
+gower_dist <- daisy(features, metric = "gower")
+
+# UMAP
+set.seed(42)
+umap_coords <- umap(as.matrix(gower_dist), n_neighbors = 30, min_dist = 0.1)
+
+umap_df <- data.frame(
+  UMAP1   = umap_coords[, 1],
+  UMAP2   = umap_coords[, 2],
+  cluster = df_clustered$cluster       
+) %>%
+  mutate(cluster_label = cluster_labels[as.character(cluster)])
+
+plot_ly(
+  umap_df,
+  x = ~UMAP1, y = ~UMAP2,
+  color = ~cluster_label,
+  type = 'scatter',
+  mode = 'markers',
+  marker = list(size = 5, opacity = 0.5),
+  colors = 'Set2'
+) %>%
+  layout(
+    title = 'K-prototypes Clusters — UMAP projection',
+    xaxis = list(title = 'UMAP 1'),
+    yaxis = list(title = 'UMAP 2')
+  )
+```
